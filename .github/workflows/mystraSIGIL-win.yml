@@ -1,4 +1,4 @@
-name: "⚡🔐✋ mystraSIGIL - Windows Fortress"
+name: "⚡🔐✋ mystraSIGIL - Standalone Windows"
 
 on:
   workflow_dispatch:
@@ -14,306 +14,94 @@ on:
           - "Windows High Performance"
           - "Windows ARM Enterprise"
       CODE:
-        description: "Full headless command (Windows)."
+        description: "Full headless command (Windows PowerShell)"
         required: true
-      RETRIES:
-        description: "CRD Retries"
-        required: false
-        default: "3"
+      PIN:
+        description: "6-Digit Remote Desktop PIN"
+        required: true
+        default: "123456"
 
 permissions:
   contents: read
-
-env:
-  MYSTRASIGIL_GITLAB_PROJECT: "EsBee-SB/mystrasigil"
-  MYSTRASIGIL_GITLAB_BRANCH:  "main"
-  MYSTRASIGIL_GITLAB_FOLDER:  "Windows"
 
 jobs:
   initializing-automation:
     name: "Initializing Automation"
     runs-on: windows-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 10
     outputs:
       runner_label: ${{ steps.resolve.outputs.runner_label }}
-
     defaults:
       run:
         shell: pwsh
-
     steps:
       - id: resolve
         env:
           PROFILE: ${{ github.event.inputs.RUNNER_PROFILE }}
-          GITLAB_PROJECT: ${{ env.MYSTRASIGIL_GITLAB_PROJECT }}
-          GITLAB_BRANCH:  ${{ env.MYSTRASIGIL_GITLAB_BRANCH }}
-          GITLAB_FOLDER:  ${{ env.MYSTRASIGIL_GITLAB_FOLDER }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          $gitlabProjectId = "$($env:GITLAB_PROJECT)".Replace("/", "%2F")
-          function Get-RemoteFileUrl([string]$FileName) {
-            $encodedFileName = [uri]::EscapeDataString("$($env:GITLAB_FOLDER)/$FileName")
-            return "https://gitlab.com/api/v4/projects/$gitlabProjectId/repository/files/$encodedFileName/raw?ref=$($env:GITLAB_BRANCH)"
+          $runnerLabel = switch ($env:PROFILE) {
+            "Windows 64 Core"          { "windows-2022" }
+            "Windows 11 ARM"           { "windows-11-arm" }
+            "Windows High Performance" { "windows-2025" }
+            "Windows ARM Enterprise"   { "windows-11-vs2026-arm" }
+            default                    { "windows-2025" }
           }
-          $mapUrl = Get-RemoteFileUrl "mystraSIGIL-runner-map.json"
-          function Set-ResolveOutput([string]$runnerLabel) {
-            "runner_label=$runnerLabel"     >> $env:GITHUB_OUTPUT
-          }
-          function Resolve-Property([object]$obj, [string]$name) {
-            if ($null -eq $obj) { return $null }
-            $prop = $obj.PSObject.Properties[$name]
-            if ($null -eq $prop) { return $null }
-            return $prop.Value
-          }
-          function New-FallbackRunnerMap {
-            return [pscustomobject]@{
-              version = 2
-              default_profile = "Windows 64 Core"
-              profiles = [pscustomobject]@{
-                'Windows 64 Core'          = [pscustomobject]@{ id='windows-64-core'; runner='windows-2022';        display_name='Windows 64 Core'; tier='stable' }
-                'Windows 11 ARM'           = [pscustomobject]@{ id='windows-11-arm'; runner='windows-11-arm';        display_name='Windows 11 ARM'; tier='stable' }
-                'Windows High Performance' = [pscustomobject]@{ id='windows-high-perf'; runner='windows-2025';       display_name='Windows High Performance'; tier='stable' }
-                'Windows ARM Enterprise'   = [pscustomobject]@{ id='windows-arm-enterprise'; runner='windows-11-vs2026-arm'; display_name='Windows ARM Enterprise'; tier='preview' }
-              }
-              runner_definitions = [pscustomobject]@{
-                'windows-2022'          = [pscustomobject]@{ github_label='windows-2022'; os='windows'; architecture='x64' }
-                'windows-11-arm'        = [pscustomobject]@{ github_label='windows-11-arm'; os='windows'; architecture='arm64' }
-                'windows-2025'          = [pscustomobject]@{ github_label='windows-2025'; os='windows'; architecture='x64' }
-                'windows-11-vs2026-arm' = [pscustomobject]@{ github_label='windows-11-vs2026-arm'; os='windows'; architecture='arm64' }
-              }
-              allowed_runners = @('windows-2022','windows-11-arm','windows-2025','windows-11-vs2026-arm')
-            }
-          }
-          $selectedProfile = "$($env:PROFILE)"
-          if ([string]::IsNullOrWhiteSpace($mapUrl)) {
-            throw "Resolved runner-map URL is empty - check MYSTRASIGIL_GITLAB_PROJECT/BRANCH/FOLDER in the workflow env."
-          }
-          try {
-            $resp = $null
-            for ($i = 1; $i -le 3; $i++) {
-              try {
-                $resp = Invoke-WebRequest -Uri $mapUrl -UseBasicParsing -TimeoutSec 45
-                break
-              } catch {
-                if ($i -eq 3) { throw }
-                Start-Sleep -Seconds (2 * $i)
-              }
-            }
-            if ([string]::IsNullOrWhiteSpace($resp.Content)) {
-              throw "Hosted map returned empty content."
-            }
-            try {
-              $content = [string]$resp.Content
-              if ($content -match '(?m)^(<<<<<<<|=======|>>>>>>>)') {
-                throw "hosted map contains unresolved merge conflict markers"
-              }
-              if ($content.TrimStart().StartsWith('<')) {
-                throw "hosted map returned non-JSON content"
-              }
-              $cfg = $content | ConvertFrom-Json
-            } catch {
-              Write-Warning "Hosted map is invalid: $($_.Exception.Message). Using embedded fallback runner map so automation can continue."
-              $cfg = New-FallbackRunnerMap
-            }
-            $profiles = Resolve-Property $cfg 'profiles'
-            if ($null -eq $profiles) {
-              throw "Invalid map: missing 'profiles' object."
-            }
-            $profileObj = Resolve-Property $profiles $selectedProfile
-            $matchType = "display_name"
-            if ($null -eq $profileObj) {
-              foreach ($entry in $profiles.PSObject.Properties) {
-                $pObj = $entry.Value
-                $pId = if ($pObj.PSObject.Properties['id']) { [string]$pObj.id } else { $null }
-                $pRunner = if ($pObj.PSObject.Properties['runner']) { [string]$pObj.runner } else { $null }
-                if ($pId -eq $selectedProfile) { $profileObj = $pObj; $matchType = "id"; break }
-                if ($pRunner -eq $selectedProfile) { $profileObj = $pObj; $matchType = "runner"; break }
-              }
-            }
-            if ($null -eq $profileObj) {
-              $available = @($profiles.PSObject.Properties.Name) -join ', '
-              throw "Profile '$selectedProfile' not found in hosted map. Available: $available"
-            }
-            $runnerLabel = if ($profileObj.PSObject.Properties['runner']) { [string]$profileObj.runner } else { $null }
-            if ([string]::IsNullOrWhiteSpace("$runnerLabel")) {
-              throw "Profile '$selectedProfile' has no 'runner' field."
-            }
-            $allowed = Resolve-Property $cfg 'allowed_runners'
-            if ($null -eq $allowed -or @($allowed).Count -eq 0) {
-              throw "Invalid map: missing or empty 'allowed_runners' array."
-            } else {
-              $allowed = @($allowed | ForEach-Object { "$_".Trim() })
-            }
-            if ($allowed -notcontains "$runnerLabel") {
-              throw "Resolved runner '$runnerLabel' is not in allowlist: $($allowed -join ', ')"
-            }
-            Write-Host "Profile resolved: input='$selectedProfile' match=$matchType -> runner=$runnerLabel"
-            Set-ResolveOutput -runnerLabel "$runnerLabel"
-          }
-          catch {
-            throw "Hosted map resolution failed (fail-closed): $($_.Exception.Message)"
-          }
+          Write-Host "Selected Profile: '$($env:PROFILE)' -> Runner: $runnerLabel"
+          "runner_label=$runnerLabel" >> $env:GITHUB_OUTPUT
+
   crd-register:
-    name: "mystraSIGIL"
-
+    name: "mystraSIGIL Desktop"
     needs: initializing-automation
-
     runs-on: ${{ needs.initializing-automation.outputs.runner_label }}
     timeout-minutes: 360
 
     env:
-      RAW_CODE:      ${{ github.event.inputs.CODE }}
-      RETRIES_INPUT: ${{ github.event.inputs.RETRIES }}
-      BRANCH:        ${{ github.ref_name }}
-      RUNNER_ENV:    "hosted"
-      RUNNER_TITLE:  ${{ github.event.inputs.RUNNER_PROFILE }}
-      MYSTRASIGIL_RUNNER_LABEL: ${{ needs.initializing-automation.outputs.runner_label }}
-      MystraSiGiL_Access_Token: ${{ secrets.MystraSiGiL_Access_Token }}
+      RAW_CODE: ${{ github.event.inputs.CODE }}
+      CRD_PIN:  ${{ github.event.inputs.PIN }}
 
     defaults:
       run:
         shell: pwsh
 
     steps:
-      - name: "Preload"
-        env:
-          GITLAB_PROJECT: ${{ env.MYSTRASIGIL_GITLAB_PROJECT }}
-          GITLAB_BRANCH:  ${{ env.MYSTRASIGIL_GITLAB_BRANCH }}
-          GITLAB_FOLDER:  ${{ env.MYSTRASIGIL_GITLAB_FOLDER }}
+      - name: "Install Chrome Remote Desktop & Tools"
         run: |
           $ErrorActionPreference = 'Stop'
-          $ProgressPreference = 'SilentlyContinue'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          $gitlabProjectId = "$($env:GITLAB_PROJECT)".Replace("/", "%2F")
-          function Get-RemoteFileUrl([string]$FileName) {
-            $encodedFileName = [uri]::EscapeDataString("$($env:GITLAB_FOLDER)/$FileName")
-            return "https://gitlab.com/api/v4/projects/$gitlabProjectId/repository/files/$encodedFileName/raw?ref=$($env:GITLAB_BRANCH)"
-          }
-          function Invoke-DownloadWithRetry([string]$url, [string]$outFile, [int]$maxAttempts = 3) {
-            $lastError = $null
-            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-              try {
-                Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing -TimeoutSec 120
-                if (-not (Test-Path -LiteralPath $outFile)) {
-                  throw "Downloaded file not found at $outFile"
-                }
-                return
-              } catch {
-                $lastError = $_
-                if ($attempt -lt $maxAttempts) {
-                  Start-Sleep -Seconds (2 * $attempt)
-                }
-              }
-            }
-            throw "Failed to download $url after $maxAttempts attempts. $($lastError.Exception.Message)"
-          }
-          if (-not $env:MystraSiGiL_Access_Token) {
-            Write-Error "Missing required repository secret: MystraSiGiL_Access_Token"
-            exit 1
-          }
-          Write-Host "::add-mask::$($env:MystraSiGiL_Access_Token)"
-          if ($env:RAW_CODE) { Write-Host "::add-mask::$($env:RAW_CODE)" }
-          Write-Host "Access token present: yes"
-          $preloadUrl  = Get-RemoteFileUrl "Preload-Assets.ps1"
-          $preloadTemp = Join-Path $env:TEMP ("Preload-Assets_{0}.ps1" -f $env:GITHUB_RUN_ID)
-          try {
-            Invoke-DownloadWithRetry -url $preloadUrl -outFile $preloadTemp -maxAttempts 3
-            powershell.exe -ExecutionPolicy Bypass -File $preloadTemp
-            if ($LASTEXITCODE -ne 0) {
-              Write-Warning "Preload script reported exit code $LASTEXITCODE. Continuing so main automation can still attempt every phase."
-              $global:LASTEXITCODE = 0
-            }
-          } catch {
-            Write-Warning "Preload step failed non-fatally: $($_.Exception.Message). Continuing to Execute phase."
-            $global:LASTEXITCODE = 0
-          } finally {
-            if (Test-Path -LiteralPath $preloadTemp) {
-              Remove-Item -LiteralPath $preloadTemp -Force -ErrorAction SilentlyContinue
-            }
-          }
-      - name: "Preflight"
-        env:
-          GITLAB_PROJECT: ${{ env.MYSTRASIGIL_GITLAB_PROJECT }}
-          GITLAB_BRANCH:  ${{ env.MYSTRASIGIL_GITLAB_BRANCH }}
-          GITLAB_FOLDER:  ${{ env.MYSTRASIGIL_GITLAB_FOLDER }}
+          Write-Host "Downloading Chrome Remote Desktop Host..."
+          $msiPath = "$env:TEMP\chromeremotedesktophost.msi"
+          Invoke-WebRequest -Uri "https://google.com" -OutFile $msiPath
+          Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msiPath`" /qn /norestart"
+          Write-Host "Chrome Remote Desktop installed."
+
+          Write-Host "Installing Brave Browser & VS Code..."
+          winget install --id Brave.Brave -e --silent --accept-package-agreements --accept-source-agreements
+          winget install --id Microsoft.VisualStudioCode -e --silent --accept-package-agreements --accept-source-agreements
+
+      - name: "Configure & Start Remote Desktop"
         run: |
           $ErrorActionPreference = 'Stop'
-          $ProgressPreference = 'SilentlyContinue'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          $gitlabProjectId = "$($env:GITLAB_PROJECT)".Replace("/", "%2F")
-          function Get-RemoteFileUrl([string]$FileName) {
-            $encodedFileName = [uri]::EscapeDataString("$($env:GITLAB_FOLDER)/$FileName")
-            return "https://gitlab.com/api/v4/projects/$gitlabProjectId/repository/files/$encodedFileName/raw?ref=$($env:GITLAB_BRANCH)"
+          if ($env:CRD_PIN -notmatch '^\d{6,}$') {
+            throw "PIN must be at least 6 digits."
           }
-          function Test-RemoteText([string]$name, [string]$url) {
-            try {
-              $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 45 -MaximumRedirection 5
-              if ([string]::IsNullOrWhiteSpace($resp.Content)) {
-                throw "empty response"
-              }
-              Write-Host "Preflight OK: $name"
-            } catch {
-              throw "Preflight failed for ${name}: $($_.Exception.Message)"
-            }
+
+          # Extract the --code value from the full headless command
+          if ($env:RAW_CODE -match '--code="([^"]+)"') {
+            $authCode = $Matches[1]
+          } else {
+            throw "Could not find --code=`"...`" in your input. Please paste the full Windows PowerShell command from ://google.com."
           }
-          if (-not $env:MystraSiGiL_Access_Token) {
-            throw "Missing required repository secret: MystraSiGiL_Access_Token"
+
+          $crdExe = "${env:ProgramFiles(x86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          if (-not (Test-Path $crdExe)) {
+            $crdExe = "$env:ProgramFiles\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
           }
-          Write-Host "::add-mask::$($env:MystraSiGiL_Access_Token)"
-          if ($env:RAW_CODE) { Write-Host "::add-mask::$($env:RAW_CODE)" }
-          Test-RemoteText -name 'runner map' -url (Get-RemoteFileUrl "mystraSIGIL-runner-map.json")
-          Test-RemoteText -name 'preload script' -url (Get-RemoteFileUrl "Preload-Assets.ps1")
-          Test-RemoteText -name 'core engine (Initialize-automation.ps1)' -url (Get-RemoteFileUrl "Initialize-automation.ps1")
-      - name: "Execute"
-        env:
-          GITLAB_PROJECT: ${{ env.MYSTRASIGIL_GITLAB_PROJECT }}
-          GITLAB_BRANCH:  ${{ env.MYSTRASIGIL_GITLAB_BRANCH }}
-          GITLAB_FOLDER:  ${{ env.MYSTRASIGIL_GITLAB_FOLDER }}
+
+          Write-Host "Registering host with Chrome Remote Desktop..."
+          & $crdExe --code="$authCode" --redirect-url="https://google.com" --name="$env:COMPUTERNAME" --pin="$env:CRD_PIN"
+
+          Write-Host "Setup complete! Connect at https://google.com using PIN: $($env:CRD_PIN)"
+
+      - name: "Keep Session Alive"
         run: |
-          $ErrorActionPreference = 'Stop'
-          $ProgressPreference = 'SilentlyContinue'
-          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          $gitlabProjectId = "$($env:GITLAB_PROJECT)".Replace("/", "%2F")
-          function Get-RemoteFileUrl([string]$FileName) {
-            $encodedFileName = [uri]::EscapeDataString("$($env:GITLAB_FOLDER)/$FileName")
-            return "https://gitlab.com/api/v4/projects/$gitlabProjectId/repository/files/$encodedFileName/raw?ref=$($env:GITLAB_BRANCH)"
-          }
-          function Invoke-DownloadWithRetry([string]$url, [string]$outFile, [int]$maxAttempts = 3) {
-            $lastError = $null
-            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-              try {
-                Invoke-WebRequest -Uri $url -OutFile $outFile -UseBasicParsing -TimeoutSec 120
-                if (-not (Test-Path -LiteralPath $outFile)) {
-                  throw "Downloaded file not found at $outFile"
-                }
-                return
-              } catch {
-                $lastError = $_
-                if ($attempt -lt $maxAttempts) {
-                  Start-Sleep -Seconds (2 * $attempt)
-                }
-              }
-            }
-            throw "Failed to download $url after $maxAttempts attempts. $($lastError.Exception.Message)"
-          }
-          if (-not $env:MystraSiGiL_Access_Token) {
-            throw "Missing required repository secret: MystraSiGiL_Access_Token"
-          }
-          Write-Host "::add-mask::$($env:MystraSiGiL_Access_Token)"
-          if ($env:RAW_CODE) { Write-Host "::add-mask::$($env:RAW_CODE)" }
-          $url      = Get-RemoteFileUrl "Initialize-automation.ps1"
-          $scriptTp = Join-Path $env:TEMP ("Initialize-automation_{0}.ps1" -f $env:GITHUB_RUN_ID)
-          try {
-            Invoke-DownloadWithRetry -url $url -outFile $scriptTp -maxAttempts 3
-            powershell.exe -ExecutionPolicy Bypass -File $scriptTp `
-              -GateSecret ($env:MystraSiGiL_Access_Token)
-            if ($LASTEXITCODE -ne 0) {
-              throw "Execution script failed with exit code $LASTEXITCODE"
-            }
-          } finally {
-            if (Test-Path -LiteralPath $scriptTp) {
-              Remove-Item -LiteralPath $scriptTp -Force -ErrorAction SilentlyContinue
-            }
-          }
+          Write-Host "Keeping runner active for up to 5.5 hours..."
+          Start-Sleep -Seconds 19800

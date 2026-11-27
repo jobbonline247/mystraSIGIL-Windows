@@ -67,15 +67,11 @@ jobs:
       - name: "Install Chrome Remote Desktop & Tools"
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host "Downloading Chrome Remote Desktop Host..."
-          $msiPath = "$env:TEMP\chromeremotedesktophost.msi"
-          Invoke-WebRequest -Uri "https://google.com" -OutFile $msiPath
-          
-          $proc = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$msiPath`" /qn /norestart"
-          if ($proc.ExitCode -ne 0) {
-            throw "MSI installation failed with exit code $($proc.ExitCode)"
-          }
-          Write-Host "Chrome Remote Desktop installed."
+          Write-Host "Updating winget sources..."
+          winget source update
+
+          Write-Host "Installing Chrome Remote Desktop Host via winget..."
+          winget install --id Google.ChromeRemoteDesktopHost -e --silent --accept-package-agreements --accept-source-agreements
 
           Write-Host "Installing Brave Browser & VS Code..."
           winget install --id Brave.Brave -e --silent --accept-package-agreements --accept-source-agreements
@@ -90,7 +86,7 @@ jobs:
 
           # Extract the --code value from the full headless command
           if ($env:RAW_CODE -match '--code="([^"]+)"') {
-            $authCode = $Matches[1]
+            $authCode = $Matches
           } else {
             throw "Could not find --code=`"...`" in your input. Please paste the full Windows PowerShell command from ://google.com."
           }

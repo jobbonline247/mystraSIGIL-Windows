@@ -84,9 +84,9 @@ jobs:
             throw "PIN must be at least 6 digits."
           }
 
-          # Extract ONLY the code value inside --code="..." using $Matches[1]
+          # Extract ONLY the code value inside --code="..."
           if ($env:RAW_CODE -match '--code="([^"]+)"') {
-            $authCode = $Matches[1]
+            $authCode = $Matches
           } else {
             throw "Could not find --code=`"...`" in your input. Please paste the full Windows PowerShell command from ://google.com."
           }

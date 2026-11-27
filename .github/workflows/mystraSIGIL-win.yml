@@ -70,7 +70,11 @@ jobs:
           Write-Host "Downloading Chrome Remote Desktop Host..."
           $msiPath = "$env:TEMP\chromeremotedesktophost.msi"
           Invoke-WebRequest -Uri "https://google.com" -OutFile $msiPath
-          Start-Process msiexec.exe -Wait -ArgumentList "/i `"$msiPath`" /qn /norestart"
+          
+          $proc = Start-Process msiexec.exe -Wait -PassThru -ArgumentList "/i `"$msiPath`" /qn /norestart"
+          if ($proc.ExitCode -ne 0) {
+            throw "MSI installation failed with exit code $($proc.ExitCode)"
+          }
           Write-Host "Chrome Remote Desktop installed."
 
           Write-Host "Installing Brave Browser & VS Code..."
@@ -91,11 +95,19 @@ jobs:
             throw "Could not find --code=`"...`" in your input. Please paste the full Windows PowerShell command from ://google.com."
           }
 
-          $crdExe = "${env:ProgramFiles(x86)}\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
-          if (-not (Test-Path $crdExe)) {
-            $crdExe = "$env:ProgramFiles\Google\Chrome Remote Desktop\CurrentVersion\remoting_start_host.exe"
+          # Dynamically locate remoting_start_host.exe inside versioned folders
+          $searchPaths = @(
+            "${env:ProgramFiles(x86)}\Google\Chrome Remote Desktop",
+            "$env:ProgramFiles\Google\Chrome Remote Desktop"
+          ) | Where-Object { Test-Path $_ }
+
+          $crdExe = Get-ChildItem -Path $searchPaths -Filter "remoting_start_host.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+
+          if (-not $crdExe) {
+            throw "remoting_start_host.exe was not found after installation."
           }
 
+          Write-Host "Found executable at: $crdExe"
           Write-Host "Registering host with Chrome Remote Desktop..."
           & $crdExe --code="$authCode" --redirect-url="https://google.com" --name="$env:COMPUTERNAME" --pin="$env:CRD_PIN"
 

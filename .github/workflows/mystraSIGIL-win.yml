@@ -84,12 +84,12 @@ jobs:
             throw "PIN must be at least 6 digits."
           }
 
-          # Extract ONLY the code value inside --code="..."
-          if ($env:RAW_CODE -match '--code="([^"]+)"') {
-            $authCode = $Matches
-          } else {
-            throw "Could not find --code=`"...`" in your input. Please paste the full Windows PowerShell command from ://google.com."
+          # Extract the code cleanly without bracket indexing
+          if ($env:RAW_CODE -notmatch '--code="([^"]+)"') {
+            throw "Could not find --code=`"...`" in your input. Paste the full Windows PowerShell command."
           }
+          $authCode = ($env:RAW_CODE -replace '.*--code="([^"]+)".*', '$1').Trim()
+          Write-Host "Extracted auth code length: $($authCode.Length) characters."
 
           # Dynamically locate remoting_start_host.exe inside versioned folders
           $searchPaths = @(
@@ -103,11 +103,12 @@ jobs:
             throw "remoting_start_host.exe was not found after installation."
           }
 
+          $redirectUrl = "https://google.com"
           Write-Host "Found executable at: $crdExe"
           Write-Host "Registering host with Chrome Remote Desktop..."
-          & $crdExe --code="$authCode" --redirect-url="https://google.com" --name="$env:COMPUTERNAME" --pin="$env:CRD_PIN"
+          & $crdExe --code="$authCode" --redirect-url="$redirectUrl" --name="$env:COMPUTERNAME" --pin="$env:CRD_PIN"
 
-          Write-Host "Setup complete! Connect at https://google.com using PIN: $($env:CRD_PIN)"
+          Write-Host "Setup complete! Open Chrome Remote Desktop Access and use PIN: $($env:CRD_PIN)"
 
       - name: "Keep Session Alive"
         run: |

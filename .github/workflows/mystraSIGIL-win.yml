@@ -1,82 +1,3 @@
-name: "⚡🔐✋ mystraSIGIL - Standalone Windows"
-
-on:
-  workflow_dispatch:
-    inputs:
-      RUNNER_PROFILE:
-        description: "Select Profile"
-        required: true
-        type: choice
-        default: "Windows High Performance"
-        options:
-          - "Windows 64 Core"
-          - "Windows 11 ARM"
-          - "Windows High Performance"
-          - "Windows ARM Enterprise"
-      CODE:
-        description: "Full headless command (Windows PowerShell)"
-        required: true
-      PIN:
-        description: "6-Digit Remote Desktop PIN"
-        required: true
-        default: "123456"
-
-permissions:
-  contents: read
-
-jobs:
-  initializing-automation:
-    name: "Initializing Automation"
-    runs-on: windows-latest
-    timeout-minutes: 10
-    outputs:
-      runner_label: ${{ steps.resolve.outputs.runner_label }}
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - id: resolve
-        env:
-          PROFILE: ${{ github.event.inputs.RUNNER_PROFILE }}
-        run: |
-          $runnerLabel = switch ($env:PROFILE) {
-            "Windows 64 Core"          { "windows-2022" }
-            "Windows 11 ARM"           { "windows-11-arm" }
-            "Windows High Performance" { "windows-2025" }
-            "Windows ARM Enterprise"   { "windows-11-vs2026-arm" }
-            default                    { "windows-2025" }
-          }
-          Write-Host "Selected Profile: '$($env:PROFILE)' -> Runner: $runnerLabel"
-          "runner_label=$runnerLabel" >> $env:GITHUB_OUTPUT
-
-  crd-register:
-    name: "mystraSIGIL Desktop"
-    needs: initializing-automation
-    runs-on: ${{ needs.initializing-automation.outputs.runner_label }}
-    timeout-minutes: 360
-
-    env:
-      RAW_CODE: ${{ github.event.inputs.CODE }}
-      CRD_PIN:  ${{ github.event.inputs.PIN }}
-
-    defaults:
-      run:
-        shell: pwsh
-
-    steps:
-      - name: "Install Chrome Remote Desktop & Tools"
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Write-Host "Updating winget sources..."
-          winget source update
-
-          Write-Host "Installing Chrome Remote Desktop Host via winget..."
-          winget install --id Google.ChromeRemoteDesktopHost -e --silent --accept-package-agreements --accept-source-agreements
-
-          Write-Host "Installing Brave Browser & VS Code..."
-          winget install --id Brave.Brave -e --silent --accept-package-agreements --accept-source-agreements
-          winget install --id Microsoft.VisualStudioCode -e --silent --accept-package-agreements --accept-source-agreements
-
       - name: "Configure & Start Remote Desktop"
         run: |
           $ErrorActionPreference = 'Stop'
@@ -84,12 +5,21 @@ jobs:
             throw "PIN must be at least 6 digits."
           }
 
-          # Extract the code cleanly without bracket indexing
+          # Extract --code directly from your pasted command
           if ($env:RAW_CODE -notmatch '--code="([^"]+)"') {
             throw "Could not find --code=`"...`" in your input. Paste the full Windows PowerShell command."
           }
           $authCode = ($env:RAW_CODE -replace '.*--code="([^"]+)".*', '$1').Trim()
+
+          # Extract --redirect-url directly from your pasted command (falls back if missing)
+          if ($env:RAW_CODE -match '--redirect-url="([^"]+)"') {
+            $redirectUrl = ($env:RAW_CODE -replace '.*--redirect-url="([^"]+)".*', '$1').Trim()
+          } else {
+            $redirectUrl = "https://google.com"
+          }
+
           Write-Host "Extracted auth code length: $($authCode.Length) characters."
+          Write-Host "Using redirect URL: $redirectUrl"
 
           # Dynamically locate remoting_start_host.exe inside versioned folders
           $searchPaths = @(
@@ -103,14 +33,8 @@ jobs:
             throw "remoting_start_host.exe was not found after installation."
           }
 
-          $redirectUrl = "https://google.com"
           Write-Host "Found executable at: $crdExe"
           Write-Host "Registering host with Chrome Remote Desktop..."
           & $crdExe --code="$authCode" --redirect-url="$redirectUrl" --name="$env:COMPUTERNAME" --pin="$env:CRD_PIN"
 
           Write-Host "Setup complete! Open Chrome Remote Desktop Access and use PIN: $($env:CRD_PIN)"
-
-      - name: "Keep Session Alive"
-        run: |
-          Write-Host "Keeping runner active for up to 5.5 hours..."
-          Start-Sleep -Seconds 19800
